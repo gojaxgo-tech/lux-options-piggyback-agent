@@ -14,9 +14,10 @@ from app.lux_agent import LuxAgent
 from app.market_data import build_market_data_provider
 from app.models import AutonomyLevel, MarketQuote
 from app.notifications import build_notifier
+from app.reports import ReportGenerator
 from app.scoring import EnterabilityScorer
 from app.service import run_forever
-from app.social_provider import FileSocialProvider, XApiPlaceholderProvider
+from app.social_provider import FileSocialProvider, JsonlSourceProvider, XApiPlaceholderProvider
 
 
 def build_agent():
@@ -25,14 +26,15 @@ def build_agent():
     database = Database(settings.db_path)
     database.initialize_control_state(settings.autonomy_level, settings.kill_switch)
     audit = AuditLogger(database)
-    provider = (
-        XApiPlaceholderProvider(settings.x_bearer_token)
-        if settings.source_mode == "x_api"
-        else FileSocialProvider(settings.source_posts_file, settings.source_platform, settings.source_account)
-    )
+    if settings.source_mode == "x_api":
+        provider = XApiPlaceholderProvider(settings.x_bearer_token)
+    elif settings.source_mode == "jsonl_watch":
+        provider = JsonlSourceProvider(settings.source_jsonl_path, settings.source_platform, settings.source_account, audit)
+    else:
+        provider = FileSocialProvider(settings.source_posts_file, settings.source_platform, settings.source_account)
     agent = LuxAgent(
         social_provider=provider,
-        market_data_provider=build_market_data_provider(settings.market_data_provider),
+        market_data_provider=build_market_data_provider(settings, audit),
         broker_provider=build_broker(settings),
         notifier=build_notifier(settings.notification_provider, settings.telegram_bot_token, settings.telegram_chat_id),
         scoring_engine=EnterabilityScorer(settings.max_entry_slippage_pct, settings.max_spread_pct),
@@ -69,6 +71,8 @@ def main() -> None:
     sub.add_parser("alerts")
     sub.add_parser("paper")
     sub.add_parser("audit")
+    report = sub.add_parser("report")
+    report.add_argument("kind", choices=("performance", "daily", "source-quality"))
 
     args = parser.parse_args()
     settings, database, audit, agent = build_agent()
@@ -146,6 +150,14 @@ def main() -> None:
         print(_rows(database, "select id, parsed_alert_id, status, paper_entry_price, paper_pnl_percent, notes from paper_positions order by id desc limit 20"))
     elif args.command == "audit":
         print(_rows(database, "select id, event_type, severity, message, created_at from audit_events order by id desc limit 30"))
+    elif args.command == "report":
+        reports = ReportGenerator(database, audit)
+        if args.kind == "performance":
+            print(reports.performance())
+        elif args.kind == "daily":
+            print(reports.daily())
+        else:
+            print(reports.source_quality())
 
 
 def _status(settings, database: Database) -> str:
@@ -165,6 +177,8 @@ def _status(settings, database: Database) -> str:
             f"last_source_check_at={state.last_source_check_at}",
             f"last_successful_ingest_at={state.last_successful_ingest_at}",
             f"market_data_provider={settings.market_data_provider}",
+            f"source_mode={settings.source_mode}",
+            f"source_jsonl_path={settings.source_jsonl_path}",
             f"llm_enabled={settings.llm_enabled}",
             f"llm_required={settings.llm_required}",
             f"openai_api_key_configured={bool(settings.openai_api_key)}",
@@ -173,6 +187,8 @@ def _status(settings, database: Database) -> str:
             f"broker_execution_enabled={settings.broker_execution_enabled}",
             f"require_human_approval={settings.require_human_approval}",
             f"tradier_env={settings.tradier_env}",
+            f"tradier_credentials_configured={bool(settings.tradier_sandbox_access_token or settings.tradier_live_access_token or settings.tradier_access_token)}",
+            f"telegram_configured={bool(settings.telegram_bot_token and settings.telegram_chat_id)}",
             f"public_x_engagement={settings.public_x_engagement}",
         ]
     )

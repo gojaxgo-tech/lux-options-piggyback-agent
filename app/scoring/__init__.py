@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 
 from app.models import ControlState, MarketQuote, ParsedAlert, ScoreDecision, ScoreResult
 
@@ -29,16 +29,27 @@ class EnterabilityScorer:
             return ScoreResult(35, ScoreDecision.NEEDS_REVIEW, ("stale_quote",), "Quote is stale. John review required.")
 
         if alert.alert_price is not None and alert.alert_price > 0:
-            slippage_pct = ((quote.option_mid - alert.alert_price) / alert.alert_price) * 100
-            if slippage_pct > self.max_entry_slippage_pct:
-                return ScoreResult(30, ScoreDecision.TOO_LATE, ("price_chased",), f"Option moved {slippage_pct:.1f}% above alert price.")
+            current_entry = quote.option_ask if quote.option_ask is not None else quote.option_mid
+            slippage_pct = ((current_entry - alert.alert_price) / alert.alert_price) * 100
+            if slippage_pct > 25:
+                return ScoreResult(30, ScoreDecision.TOO_LATE, ("do_not_chase",), f"Option moved {slippage_pct:.1f}% above alert price.")
+            if slippage_pct > 10:
+                return ScoreResult(45, ScoreDecision.CHASED, ("price_moved_above_alert",), f"Option moved {slippage_pct:.1f}% above alert price.")
             score += 15
-            reason_codes.append("near_alert_price")
+            reason_codes.append("price_near_alert")
 
         if quote.option_bid is not None and quote.option_ask is not None and quote.option_mid:
             spread_pct = ((quote.option_ask - quote.option_bid) / quote.option_mid) * 100
             if spread_pct > self.max_spread_pct:
-                return ScoreResult(40, ScoreDecision.NEEDS_REVIEW, ("wide_spread",), f"Bid/ask spread is wide at {spread_pct:.1f}%.")
+                return ScoreResult(40, ScoreDecision.BAD_SPREAD, ("wide_spread",), f"Bid/ask spread is wide at {spread_pct:.1f}%.")
+
+        if alert.expiration_date:
+            try:
+                dte = (date.fromisoformat(alert.expiration_date) - date.today()).days
+                if dte <= 7:
+                    return ScoreResult(35, ScoreDecision.NEEDS_REVIEW, ("high_time_decay_risk",), "Expiration is within 7 days.")
+            except ValueError:
+                pass
 
         if quote.volume is None:
             score -= 5
@@ -54,7 +65,7 @@ class EnterabilityScorer:
 
         reason_codes.append("fresh_alert")
         score = max(0, min(100, score))
-        decision = ScoreDecision.PAPER_CANDIDATE if score >= 70 else ScoreDecision.WATCH
+        decision = ScoreDecision.PAPER_CANDIDATE if score >= 70 else ScoreDecision.NEAR_ALERT_PRICE if "price_near_alert" in reason_codes else ScoreDecision.WATCH
         summary = "Conservative paper candidate." if decision == ScoreDecision.PAPER_CANDIDATE else "Watch only; John review recommended."
         return ScoreResult(score, decision, tuple(reason_codes), summary)
 

@@ -8,25 +8,32 @@ services:
     command: ["python", "-m", "app.main", "daemon"]
     environment:
       APP_NAME: "Sniper Alert"
-      SOURCE_MODE: "manual"
-      MARKET_DATA_PROVIDER: "none"
+      SOURCE_MODE: "jsonl_watch"
+      SOURCE_JSONL_PATH: "/app/input/source_posts.jsonl"
+      MARKET_DATA_PROVIDER: "tradier"
       BROKER_PROVIDER: "tradier"
-      BROKER_MODE: "none"
+      BROKER_MODE: "read_only"
       BROKER_EXECUTION_ENABLED: "false"
       REQUIRE_HUMAN_APPROVAL: "true"
       TRADIER_ENV: "sandbox"
-      AUTONOMY_LEVEL: "monitor_only"
+      ENABLE_TRADIER_SANDBOX_ORDERS: "false"
+      AUTONOMY_LEVEL: "paper_trade"
       PUBLIC_X_ENGAGEMENT: "false"
       KILL_SWITCH: "false"
       LLM_ENABLED: "false"
       LLM_REQUIRED: "false"
-      NOTIFICATION_PROVIDER: "console"
+      NOTIFICATION_PROVIDER: "telegram"
+      ALLOW_MARKET_ORDERS: "false"
+      ALLOW_SHORT_OPTIONS: "false"
+      ALLOW_MULTI_LEG_OPTIONS: "false"
       DATABASE_URL: "sqlite:////app/data/sniper_alert.sqlite"
       LOG_FILE: "/app/logs/sniper_alert.log"
     volumes:
       - sniper_alert_data:/app/data
       - sniper_alert_logs:/app/logs
+      - sniper_alert_input:/app/input
 
 volumes:
   sniper_alert_data:
   sniper_alert_logs:
+  sniper_alert_input:

@@ -6,29 +6,37 @@ services:
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
     command: ["python", "-m", "app.main", "daemon"]
-    env_file:
-      - ../.env
     environment:
       APP_NAME: ${APP_NAME:-Sniper Alert}
-      SOURCE_MODE: ${SOURCE_MODE:-manual}
-      MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-none}
+      SOURCE_MODE: ${SOURCE_MODE:-jsonl_watch}
+      SOURCE_JSONL_PATH: ${SOURCE_JSONL_PATH:-/app/input/source_posts.jsonl}
+      MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-tradier}
       BROKER_PROVIDER: ${BROKER_PROVIDER:-tradier}
-      BROKER_MODE: ${BROKER_MODE:-none}
+      BROKER_MODE: ${BROKER_MODE:-read_only}
       BROKER_EXECUTION_ENABLED: ${BROKER_EXECUTION_ENABLED:-false}
       REQUIRE_HUMAN_APPROVAL: ${REQUIRE_HUMAN_APPROVAL:-true}
       TRADIER_ENV: ${TRADIER_ENV:-sandbox}
-      LLM_ENABLED: ${LLM_ENABLED:-true}
+      ENABLE_TRADIER_SANDBOX_ORDERS: ${ENABLE_TRADIER_SANDBOX_ORDERS:-false}
+      AUTONOMY_LEVEL: ${AUTONOMY_LEVEL:-paper_trade}
+      PUBLIC_X_ENGAGEMENT: ${PUBLIC_X_ENGAGEMENT:-false}
+      KILL_SWITCH: ${KILL_SWITCH:-false}
+      LLM_ENABLED: ${LLM_ENABLED:-false}
       LLM_REQUIRED: ${LLM_REQUIRED:-false}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       NOTIFICATION_PROVIDER: ${NOTIFICATION_PROVIDER:-console}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      ALLOW_MARKET_ORDERS: ${ALLOW_MARKET_ORDERS:-false}
+      ALLOW_SHORT_OPTIONS: ${ALLOW_SHORT_OPTIONS:-false}
+      ALLOW_MULTI_LEG_OPTIONS: ${ALLOW_MULTI_LEG_OPTIONS:-false}
       DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/sniper_alert.sqlite}
       LOG_FILE: ${LOG_FILE:-/app/logs/sniper_alert.log}
     volumes:
       - sniper_alert_data:/app/data
       - sniper_alert_logs:/app/logs
+      - sniper_alert_input:/app/input
 
 volumes:
   sniper_alert_data:
   sniper_alert_logs:
+  sniper_alert_input:

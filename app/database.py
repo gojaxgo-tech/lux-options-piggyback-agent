@@ -162,7 +162,31 @@ class Database:
             );
             """
         )
+        self._ensure_paper_columns()
         self.conn.commit()
+
+    def _ensure_paper_columns(self) -> None:
+        existing = {row["name"] for row in self.conn.execute("pragma table_info(paper_positions)")}
+        columns = {
+            "source_post_id": "text",
+            "source_url": "text",
+            "ticker": "text",
+            "option_type": "text",
+            "strike": "real",
+            "expiration_date": "text",
+            "paper_entry_source": "text",
+            "max_seen_price": "real",
+            "max_seen_gain_percent": "real",
+            "min_seen_price": "real",
+            "max_drawdown_percent": "real",
+            "last_price": "real",
+            "last_price_time": "text",
+            "source_exit_detected": "integer not null default 0",
+            "source_exit_post_id": "text",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                self.conn.execute(f"alter table paper_positions add column {name} {definition}")
 
     def initialize_control_state(self, autonomy_level: AutonomyLevel, kill_switch: bool) -> None:
         now = utc_now().isoformat()
@@ -322,7 +346,7 @@ class Database:
                 insert into claimed_performance
                 (social_post_id, related_alert_id, claimed_gain_percent, claimed_entry, claimed_exit,
                  claimed_text, verification_status, created_at)
-                values (?, ?, ?, ?, ?, ?, 'unverified', ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     social_post_id,
@@ -331,9 +355,13 @@ class Database:
                     None,
                     update.claimed_price,
                     update.raw_update_text,
+                    "not_enough_data",
                     now,
                 ),
             )
+        if update.source_exit_detected and related_alert_id:
+            source_post_id = self.conn.execute("select source_post_id from social_posts where id = ?", (social_post_id,)).fetchone()
+            self.mark_source_exit(related_alert_id, source_post_id["source_post_id"] if source_post_id else None)
         self.conn.commit()
         return int(cursor.lastrowid)
 
@@ -384,17 +412,154 @@ class Database:
         )
         self.conn.commit()
 
-    def create_paper_position(self, parsed_alert_id: int, entry_price: float, notes: str) -> None:
+    def create_paper_position(
+        self,
+        parsed_alert_id: int,
+        entry_price: float,
+        notes: str,
+        entry_source: str = "unknown",
+    ) -> None:
         now = utc_now().isoformat()
+        alert_row = self.conn.execute(
+            """
+            select parsed_alerts.*, social_posts.source_post_id, social_posts.source_url
+            from parsed_alerts
+            join social_posts on social_posts.id = parsed_alerts.social_post_id
+            where parsed_alerts.id = ?
+            """,
+            (parsed_alert_id,),
+        ).fetchone()
         self.conn.execute(
             """
             insert into paper_positions
-            (parsed_alert_id, status, paper_entry_price, paper_entry_time, notes, created_at, updated_at)
-            values (?, 'open', ?, ?, ?, ?, ?)
+            (parsed_alert_id, status, paper_entry_price, paper_entry_time, notes, created_at, updated_at,
+             source_post_id, source_url, ticker, option_type, strike, expiration_date, paper_entry_source,
+             max_seen_price, min_seen_price, last_price, last_price_time)
+            values (?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (parsed_alert_id, entry_price, now, notes, now, now),
+            (
+                parsed_alert_id,
+                entry_price,
+                now,
+                notes,
+                now,
+                now,
+                alert_row["source_post_id"] if alert_row else None,
+                alert_row["source_url"] if alert_row else None,
+                alert_row["ticker"] if alert_row else None,
+                alert_row["option_type"] if alert_row else None,
+                alert_row["strike"] if alert_row else None,
+                alert_row["expiration_date"] if alert_row else None,
+                entry_source,
+                entry_price,
+                entry_price,
+                entry_price,
+                now,
+            ),
         )
         self.conn.commit()
+
+    def mark_source_exit(self, parsed_alert_id: int, source_exit_post_id: Optional[str]) -> None:
+        now = utc_now().isoformat()
+        self.conn.execute(
+            """
+            update paper_positions
+            set status = 'source_exit_detected',
+                source_exit_detected = 1,
+                source_exit_post_id = ?,
+                updated_at = ?
+            where parsed_alert_id = ? and status in ('open', 'insufficient_data')
+            """,
+            (source_exit_post_id, now, parsed_alert_id),
+        )
+        self.conn.commit()
+
+    def update_paper_position_price(self, parsed_alert_id: int, last_price: float) -> list[int]:
+        row = self.conn.execute(
+            "select * from paper_positions where parsed_alert_id = ? order by id desc limit 1",
+            (parsed_alert_id,),
+        ).fetchone()
+        if not row or row["paper_entry_price"] in (None, 0):
+            return []
+        now = utc_now().isoformat()
+        entry = float(row["paper_entry_price"])
+        gain_pct = round(((last_price - entry) / entry) * 100, 2)
+        max_seen = max(last_price, row["max_seen_price"] if row["max_seen_price"] is not None else last_price)
+        min_seen = min(last_price, row["min_seen_price"] if row["min_seen_price"] is not None else last_price)
+        max_gain = round(((max_seen - entry) / entry) * 100, 2)
+        max_drawdown = round(((min_seen - entry) / entry) * 100, 2)
+        self.conn.execute(
+            """
+            update paper_positions
+            set last_price = ?,
+                last_price_time = ?,
+                paper_pnl_percent = ?,
+                max_seen_price = ?,
+                max_seen_gain_percent = ?,
+                min_seen_price = ?,
+                max_drawdown_percent = ?,
+                updated_at = ?
+            where id = ?
+            """,
+            (last_price, now, gain_pct, max_seen, max_gain, min_seen, max_drawdown, now, row["id"]),
+        )
+        self.conn.commit()
+        crossed = []
+        for threshold in (25, 50, 75, 100, 150, 200, 300):
+            if gain_pct >= threshold:
+                crossed.append(threshold)
+        for threshold in (-20, -35, -50, -75, -100):
+            if gain_pct <= threshold:
+                crossed.append(threshold)
+        return crossed
+
+    def paper_position_exists(self, parsed_alert_id: int) -> bool:
+        row = self.conn.execute("select id from paper_positions where parsed_alert_id = ? limit 1", (parsed_alert_id,)).fetchone()
+        return row is not None
+
+    def performance_summary(self) -> dict:
+        row = self.conn.execute(
+            """
+            select
+              (select count(*) from social_posts) as total_source_posts,
+              (select count(*) from parsed_alerts) as total_alerts,
+              (select count(*) from parsed_alerts where needs_review = 0) as parsed_alerts,
+              (select count(*) from parsed_alerts where needs_review = 1) as unparseable_alerts,
+              (select count(*) from paper_positions) as paper_copied_alerts,
+              (select count(*) from paper_positions where status = 'open') as open_paper_positions,
+              (select count(*) from paper_positions where status = 'closed') as closed_paper_positions,
+              (select count(*) from paper_positions where status = 'insufficient_data') as insufficient_data,
+              (select count(*) from claimed_performance) as source_claims,
+              (select count(*) from claimed_performance where verification_status = 'verified_against_quote') as claims_verified,
+              (select count(*) from claimed_performance where verification_status = 'contradicted') as claims_contradicted,
+              (select count(*) from claimed_performance where verification_status in ('not_enough_data', 'unverified')) as claims_not_enough_data,
+              (select count(*) from scores where reason_codes like '%missing_quote%') as alerts_skipped_missing_quote,
+              (select count(*) from scores where reason_codes like '%price%chase%' or reason_codes like '%do_not_chase%') as alerts_skipped_chased,
+              (select count(*) from scores where reason_codes like '%stale%') as alerts_skipped_stale
+            """
+        ).fetchone()
+        data = dict(row)
+        gains = [r["paper_pnl_percent"] for r in self.conn.execute("select paper_pnl_percent from paper_positions where paper_pnl_percent is not null")]
+        winners = [g for g in gains if g > 0]
+        losers = [g for g in gains if g < 0]
+        data.update(
+            {
+                "winners": len(winners),
+                "losers": len(losers),
+                "win_rate": round(len(winners) / (len(winners) + len(losers)), 4) if winners or losers else None,
+                "average_gain": round(sum(winners) / len(winners), 2) if winners else None,
+                "average_loss": round(sum(losers) / len(losers), 2) if losers else None,
+                "median_gain": sorted(winners)[len(winners) // 2] if winners else None,
+                "max_gain": max(winners) if winners else None,
+                "max_drawdown": min(losers) if losers else None,
+                "average_alert_delay": None,
+                "average_time_to_25_percent": None,
+                "average_time_to_50_percent": None,
+                "average_time_to_minus_35_percent": None,
+                "average_hold_time_if_exit_detected": None,
+            }
+        )
+        return data
 
     def find_latest_alert_id(self, ticker: Optional[str]) -> Optional[int]:
         if not ticker:
@@ -424,4 +589,3 @@ class Database:
             (check_name, status, message, utc_now().isoformat()),
         )
         self.conn.commit()
-

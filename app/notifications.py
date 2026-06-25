@@ -56,6 +56,20 @@ def format_alert_notification(source_account: str, alert: ParsedAlert, quote: Ma
             f"Reason: {', '.join(score.reason_codes)}",
             f"Raw Post: {alert.raw_alert_text}",
             "Status: John review required" if score.decision.value != "paper_candidate" else "Status: Paper candidate only",
+            "",
+            "Options are high risk. This is a review alert, not a trade instruction.",
         ]
     )
 
+
+def format_claim_notification(source_account: str, claim_text: str, verification: str, matched: str | None = None) -> str:
+    return "\n".join(
+        [
+            "Sniper Alert Claim Detected",
+            f"Source: @{source_account.lstrip('@')}",
+            f"Claim: {claim_text}",
+            f"Matched Alert: {matched or 'unknown'}",
+            f"Verification: {verification}",
+            "Claimed results are not counted as verified wins unless quote or paper data supports them.",
+        ]
+    )

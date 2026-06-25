@@ -13,6 +13,7 @@ def utc_now() -> datetime:
 class Classification(str, Enum):
     NEW_TRADE_ALERT = "new_trade_alert"
     TRADE_UPDATE = "trade_update"
+    SOURCE_EXIT_UPDATE = "source_exit_update"
     CLAIMED_RESULT = "claimed_result"
     GENERAL_MARKET_COMMENTARY = "general_market_commentary"
     NON_TRADE = "non_trade"
@@ -32,8 +33,13 @@ class AutonomyLevel(str, Enum):
 class ScoreDecision(str, Enum):
     WATCH = "watch"
     NEEDS_REVIEW = "needs_review"
+    NEAR_ALERT_PRICE = "near_alert_price"
+    CHASED = "chased"
     TOO_LATE = "too_late"
+    BAD_SPREAD = "bad_spread"
+    STALE_ALERT = "stale_alert"
     PAPER_CANDIDATE = "paper_candidate"
+    SKIP = "skip"
     INVALID = "invalid"
     BLOCKED_BY_KILL_SWITCH = "blocked_by_kill_switch"
     PAUSED = "paused"
@@ -85,6 +91,7 @@ class TradeUpdate:
     claimed_price: Optional[float] = None
     claimed_percent_gain: Optional[float] = None
     claimed_status: Optional[str] = None
+    source_exit_detected: bool = False
 
 
 @dataclass(frozen=True)
@@ -122,4 +129,3 @@ class ControlState:
     autonomy_level: AutonomyLevel
     last_source_check_at: Optional[str] = None
     last_successful_ingest_at: Optional[str] = None
-

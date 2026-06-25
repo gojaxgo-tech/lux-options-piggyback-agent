@@ -25,5 +25,14 @@ def test_price_chased_returns_too_late():
     score = EnterabilityScorer(max_entry_slippage_pct=20).score(alert, quote, control())
 
     assert score.decision == ScoreDecision.TOO_LATE
-    assert "price_chased" in score.reason_codes
+    assert "do_not_chase" in score.reason_codes
 
+
+def test_price_moved_moderately_returns_chased():
+    alert = parse_first_alert("$HNI 45 CALL 7/17 avg .75", today=date(2026, 6, 25))
+    quote = MarketQuote("stub", datetime.now(timezone.utc), option_bid=0.84, option_ask=0.88, option_last=0.86, volume=100, open_interest=100)
+
+    score = EnterabilityScorer(max_entry_slippage_pct=20).score(alert, quote, control())
+
+    assert score.decision == ScoreDecision.CHASED
+    assert "price_moved_above_alert" in score.reason_codes

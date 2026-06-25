@@ -20,5 +20,4 @@ def test_claimed_performance_is_stored_separately(tmp_path):
 
     claim = db.conn.execute("select verification_status from claimed_performance").fetchone()
     assert parsed_id is not None
-    assert claim["verification_status"] == "unverified"
-
+    assert claim["verification_status"] == "not_enough_data"

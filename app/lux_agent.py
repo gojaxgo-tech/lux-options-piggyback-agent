@@ -75,7 +75,7 @@ class LuxAgent:
 
         if classification.classification == Classification.NEW_TRADE_ALERT:
             return self._handle_new_alert(social_post_id, post)
-        if classification.classification in (Classification.CLAIMED_RESULT, Classification.TRADE_UPDATE):
+        if classification.classification in (Classification.CLAIMED_RESULT, Classification.TRADE_UPDATE, Classification.SOURCE_EXIT_UPDATE):
             return self._handle_update(social_post_id, post, classification.classification)
 
         self.audit_logger.log("llm_call_skipped", f"Rules classified post as {classification.classification.value}")
@@ -99,7 +99,7 @@ class LuxAgent:
             self.database.save_score(parsed_alert_id, quote_id, score)
             self.audit_logger.log("score_generated", f"Alert {parsed_alert_id}: {score.decision.value} {score.score}")
             self._notify_alert(alert, quote, score)
-            if self.database.get_control_state().autonomy_level == AutonomyLevel.PAPER_TRADE and score.decision == ScoreDecision.PAPER_CANDIDATE:
+            if self.database.get_control_state().autonomy_level == AutonomyLevel.PAPER_TRADE:
                 opened = self.paper_tracker.maybe_open(parsed_alert_id, alert, quote, enabled=True)
                 if opened:
                     self.audit_logger.log("paper_position_opened", f"Paper position opened for alert {parsed_alert_id}")
@@ -108,7 +108,12 @@ class LuxAgent:
     def _handle_update(self, social_post_id: int, post: SocialPost, classification: Classification) -> dict:
         update = parse_trade_update(post.raw_text)
         update_id = self.database.save_trade_update(social_post_id, update)
-        event = "claimed_performance_logged" if classification == Classification.CLAIMED_RESULT else "trade_update_logged"
+        if classification == Classification.CLAIMED_RESULT:
+            event = "claimed_performance_detected"
+        elif classification == Classification.SOURCE_EXIT_UPDATE or update.source_exit_detected:
+            event = "source_exit_detected"
+        else:
+            event = "source_update_matched"
         self.audit_logger.log(event, f"Update {update_id} stored as unverified unless quote data verifies it")
         return {"status": classification.value, "social_post_id": social_post_id, "update_id": update_id}
 

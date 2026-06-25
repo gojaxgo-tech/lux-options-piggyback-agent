@@ -36,6 +36,7 @@ class Settings:
     source_platform: str
     source_account: str
     source_mode: str
+    source_jsonl_path: Path
     x_bearer_token: str
     notification_provider: str
     telegram_bot_token: str
@@ -58,7 +59,15 @@ class Settings:
     require_human_approval: bool
     tradier_env: str
     tradier_access_token: str
+    tradier_sandbox_access_token: str
+    tradier_live_access_token: str
     tradier_account_id: str
+    tradier_base_url_sandbox: str
+    tradier_base_url_live: str
+    enable_tradier_sandbox_orders: bool
+    allow_market_orders: bool
+    allow_short_options: bool
+    allow_multi_leg_options: bool
     public_x_engagement: bool
     kill_switch: bool
     poll_interval_seconds: int
@@ -88,12 +97,13 @@ def load_settings() -> Settings:
         log_file=Path(os.getenv("LOG_FILE", "logs/sniper_alert.log")),
         source_platform=os.getenv("SOURCE_PLATFORM", "x"),
         source_account=os.getenv("SOURCE_ACCOUNT", "StockOptions888").lstrip("@"),
-        source_mode=os.getenv("SOURCE_MODE", "manual"),
+        source_mode=os.getenv("SOURCE_MODE", "jsonl_watch"),
+        source_jsonl_path=Path(os.getenv("SOURCE_JSONL_PATH", "/app/input/source_posts.jsonl")),
         x_bearer_token=os.getenv("X_BEARER_TOKEN", ""),
-        notification_provider=os.getenv("NOTIFICATION_PROVIDER", "console"),
+        notification_provider=os.getenv("NOTIFICATION_PROVIDER", "telegram"),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
-        llm_enabled=env_bool("LLM_ENABLED", True),
+        llm_enabled=env_bool("LLM_ENABLED", False),
         llm_required=env_bool("LLM_REQUIRED", False),
         llm_provider=os.getenv("LLM_PROVIDER", "openai"),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
@@ -103,20 +113,28 @@ def load_settings() -> Settings:
         llm_use_deep=env_bool("LLM_USE_DEEP", False),
         llm_max_calls_per_day=int(os.getenv("LLM_MAX_CALLS_PER_DAY", "200")),
         llm_calls_only_on_low_confidence=env_bool("LLM_CALLS_ONLY_ON_LOW_CONFIDENCE", True),
-        market_data_provider=os.getenv("MARKET_DATA_PROVIDER", "none"),
+        market_data_provider=os.getenv("MARKET_DATA_PROVIDER", "tradier"),
         broker_provider=os.getenv("BROKER_PROVIDER", "tradier"),
-        broker_mode=os.getenv("BROKER_MODE", "none"),
-        autonomy_level=AutonomyLevel(os.getenv("AUTONOMY_LEVEL", "monitor_only")),
+        broker_mode=os.getenv("BROKER_MODE", "read_only"),
+        autonomy_level=AutonomyLevel(os.getenv("AUTONOMY_LEVEL", "paper_trade")),
         broker_execution_enabled=env_bool("BROKER_EXECUTION_ENABLED", False),
         require_human_approval=env_bool("REQUIRE_HUMAN_APPROVAL", True),
         tradier_env=os.getenv("TRADIER_ENV", "sandbox"),
         tradier_access_token=os.getenv("TRADIER_ACCESS_TOKEN", ""),
+        tradier_sandbox_access_token=os.getenv("TRADIER_SANDBOX_ACCESS_TOKEN", ""),
+        tradier_live_access_token=os.getenv("TRADIER_LIVE_ACCESS_TOKEN", ""),
         tradier_account_id=os.getenv("TRADIER_ACCOUNT_ID", ""),
+        tradier_base_url_sandbox=os.getenv("TRADIER_BASE_URL_SANDBOX", "https://sandbox.tradier.com/v1"),
+        tradier_base_url_live=os.getenv("TRADIER_BASE_URL_LIVE", "https://api.tradier.com/v1"),
+        enable_tradier_sandbox_orders=env_bool("ENABLE_TRADIER_SANDBOX_ORDERS", False),
+        allow_market_orders=env_bool("ALLOW_MARKET_ORDERS", False),
+        allow_short_options=env_bool("ALLOW_SHORT_OPTIONS", False),
+        allow_multi_leg_options=env_bool("ALLOW_MULTI_LEG_OPTIONS", False),
         public_x_engagement=env_bool("PUBLIC_X_ENGAGEMENT", False),
         kill_switch=env_bool("KILL_SWITCH", False),
         poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "60")),
         stale_source_warning_minutes=int(os.getenv("STALE_SOURCE_WARNING_MINUTES", "30")),
         max_entry_slippage_pct=float(os.getenv("MAX_ENTRY_SLIPPAGE_PCT", "20")),
-        max_spread_pct=float(os.getenv("MAX_SPREAD_PCT", "25")),
+        max_spread_pct=float(os.getenv("MAX_SPREAD_PCT", "20")),
         source_posts_file=os.getenv("SOURCE_POSTS_FILE") or os.getenv("LUX_SOURCE_POSTS_FILE") or None,
     )

@@ -20,6 +20,7 @@ CONTRACT_RE = re.compile(
 PRICE_RE = re.compile(r"\b(?:avg|average|entry|at|@)\s*\$?(?P<price>(?:\d+)?\.\d+|\d+(?:\.\d+)?)", re.IGNORECASE)
 CLAIM_PRICE_RE = re.compile(r"\$?(?P<price>\d+(?:\.\d+)?)\s+on\s+\$?(?P<ticker>[A-Z]{1,6})", re.IGNORECASE)
 CLAIM_GAIN_RE = re.compile(r"(?P<gain>\d+(?:\.\d+)?)\s*%", re.IGNORECASE)
+EXIT_RE = re.compile(r"\b(sold|trim|trimmed|take profit|took profit|cut|stopped|out|closed|runner|leave runners)\b", re.IGNORECASE)
 
 
 def parse_alerts(text: str, today: date | None = None) -> list[ParsedAlert]:
@@ -48,6 +49,9 @@ def parse_trade_update(text: str) -> TradeUpdate:
     price_match = CLAIM_PRICE_RE.search(normalized)
     gain_match = CLAIM_GAIN_RE.search(normalized)
     update_type = "claimed_result" if price_match or gain_match else "trade_update"
+    exit_detected = bool(EXIT_RE.search(normalized))
+    if exit_detected and update_type != "claimed_result":
+        update_type = "source_exit_update"
     status = "unverified_claim" if update_type == "claimed_result" else None
     return TradeUpdate(
         update_type=update_type,
@@ -56,6 +60,7 @@ def parse_trade_update(text: str) -> TradeUpdate:
         claimed_price=_parse_price(price_match.group("price")) if price_match else None,
         claimed_percent_gain=float(gain_match.group("gain")) if gain_match else None,
         claimed_status=status,
+        source_exit_detected=exit_detected,
     )
 
 
@@ -136,4 +141,3 @@ def _first_present(text: str, candidates: Iterable[str]) -> str | None:
 def _first_ticker(text: str) -> str | None:
     match = re.search(r"\$([A-Z]{1,6})\b", text)
     return match.group(1).upper() if match else None
-

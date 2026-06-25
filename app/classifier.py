@@ -10,11 +10,15 @@ CONTRACT_RE = re.compile(
     re.IGNORECASE,
 )
 CLAIM_RE = re.compile(
-    r"(\d+(?:\.\d+)?\s*%|\brunner\b|\bsold\b|\btrim(?:med)?\b|\btook profit\b|\bcongrats\b|\bwinner\b|\bbanked\b)",
+    r"(\d+(?:\.\d+)?\s*%|\b100%\b|\b200%\b|\b300%\b|\b700%\b|\bwinner\b|\bbanked\b|\bcongrats\b|\bcalled it\b|\bfrom\s+\.\d+\s+to\s+\d)",
+    re.IGNORECASE,
+)
+EXIT_RE = re.compile(
+    r"\b(sold|trim|trimmed|take profit|took profit|cut|stopped|out|closed|runner left|leave runners)\b",
     re.IGNORECASE,
 )
 UPDATE_RE = re.compile(
-    r"\b(hold|stop|trim|added|averaged|still in|watch|moving|alert update|runner)\b",
+    r"\b(hold|still holding|added|averaged|watch|moving|runner|update|alert update)\b",
     re.IGNORECASE,
 )
 MARKET_COMMENTARY_RE = re.compile(r"\b(spy|qqq|market|fomc|fed|cpi|jobs|yields|watchlist)\b", re.IGNORECASE)
@@ -26,6 +30,8 @@ def classify_text(text: str) -> ClassificationResult:
         return ClassificationResult(Classification.NEW_TRADE_ALERT, 0.95, "contract_pattern")
     if CLAIM_RE.search(normalized):
         return ClassificationResult(Classification.CLAIMED_RESULT, 0.85, "claimed_performance_terms")
+    if EXIT_RE.search(normalized):
+        return ClassificationResult(Classification.SOURCE_EXIT_UPDATE, 0.82, "exit_terms")
     if UPDATE_RE.search(normalized):
         return ClassificationResult(Classification.TRADE_UPDATE, 0.75, "update_terms")
     if MARKET_COMMENTARY_RE.search(normalized):
@@ -33,4 +39,3 @@ def classify_text(text: str) -> ClassificationResult:
     if "$" not in normalized and "CALL" not in normalized.upper() and "PUT" not in normalized.upper():
         return ClassificationResult(Classification.NON_TRADE, 0.7, "no_trade_indicators")
     return ClassificationResult(Classification.UNKNOWN, 0.3, "low_confidence")
-
