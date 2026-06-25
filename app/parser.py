@@ -36,6 +36,7 @@ def parse_alerts(text: str, today: date | None = None) -> list[ParsedAlert]:
             raw_alert_text=normalized,
             parse_confidence=0.0,
             needs_review=True,
+            inferred_fields=("contract_parse_low_confidence",),
         )
     ]
 
@@ -73,17 +74,28 @@ def _alert_from_match(raw_text: str, match: re.Match, today: date) -> ParsedAler
     alert_price_raw = price_match.group("price") if price_match else None
     alert_price = _parse_price(alert_price_raw) if alert_price_raw else None
     confidence_label = _first_present(raw_text, ("HIGH CONFIDENCE",))
-    hype_label = _first_present(raw_text, ("700% POTENTIAL", "LOTTO", "STARTER"))
+    hype_label = _first_present(raw_text, ("1000% POTENTIAL", "700% POTENTIAL", "10X POTENTIAL", "LOTTO", "STARTER"))
     time_horizon = _first_present(raw_text, ("SWING OVERNIGHT", "OVERNIGHT", "SWING", "SCALP"))
+    has_here_marker = "HERE" in trailing.upper()
     fields_present = [
         bool(match.group("ticker")),
         bool(match.group("strike")),
         bool(option_type),
         bool(expiration),
-        alert_price is not None or "HERE" in trailing.upper(),
+        alert_price is not None or has_here_marker,
     ]
     parse_confidence = sum(1 for item in fields_present if item) / len(fields_present)
-    inferred_fields = ("expiration_year",) if inferred else ()
+    inferred_fields = []
+    if inferred:
+        inferred_fields.append("expiration_year")
+    if alert_price is not None:
+        inferred_fields.append("clean_entry")
+    elif has_here_marker:
+        inferred_fields.append("valid_contract_missing_price")
+    else:
+        inferred_fields.append("contract_parse_low_confidence")
+    if hype_label:
+        inferred_fields.append("hype_potential")
     ticker = match.group("ticker").upper()
     strike = float(match.group("strike"))
     contract_symbol = f"{ticker} {strike:g} {option_type.value} {match.group('expiration')}"
@@ -103,7 +115,7 @@ def _alert_from_match(raw_text: str, match: re.Match, today: date) -> ParsedAler
         hype_label=hype_label,
         parse_confidence=parse_confidence,
         needs_review=parse_confidence < 0.8 or alert_price is None,
-        inferred_fields=inferred_fields,
+        inferred_fields=tuple(inferred_fields),
     )
 
 

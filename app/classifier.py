@@ -10,9 +10,10 @@ CONTRACT_RE = re.compile(
     re.IGNORECASE,
 )
 CLAIM_RE = re.compile(
-    r"(\d+(?:\.\d+)?\s*%|\b100%\b|\b200%\b|\b300%\b|\b700%\b|\bwinner\b|\bbanked\b|\bcongrats\b|\bcalled it\b|\bfrom\s+\.\d+\s+to\s+\d)",
+    r"(\bnow\s+\d+(?:\.\d+)?\s*%\+?|\d+(?:\.\d+)?\s*%\+?\s*(?:overnight|stress free|winner|banked)|\bwinner\b|\bbanked\b|\bcongrats\b|\bcalled it\b|\bfrom\s+\.\d+\s+to\s+\d)",
     re.IGNORECASE,
 )
+HYPE_RE = re.compile(r"\b(\d+x|10x|1000%\s+potential|\d+(?:\.\d+)?\s*%\s+potential|potential)\b", re.IGNORECASE)
 EXIT_RE = re.compile(
     r"\b(sold|trim|trimmed|take profit|took profit|cut|stopped|out|closed|runner left|leave runners)\b",
     re.IGNORECASE,
@@ -27,7 +28,10 @@ MARKET_COMMENTARY_RE = re.compile(r"\b(spy|qqq|market|fomc|fed|cpi|jobs|yields|w
 def classify_text(text: str) -> ClassificationResult:
     normalized = " ".join(text.split())
     if CONTRACT_RE.search(normalized):
-        return ClassificationResult(Classification.NEW_TRADE_ALERT, 0.95, "contract_pattern")
+        reason = "hype_potential" if HYPE_RE.search(normalized) else "contract_pattern"
+        return ClassificationResult(Classification.NEW_TRADE_ALERT, 0.95, reason)
+    if HYPE_RE.search(normalized):
+        return ClassificationResult(Classification.GENERAL_MARKET_COMMENTARY, 0.7, "hype_potential")
     if CLAIM_RE.search(normalized):
         return ClassificationResult(Classification.CLAIMED_RESULT, 0.85, "claimed_performance_terms")
     if EXIT_RE.search(normalized):

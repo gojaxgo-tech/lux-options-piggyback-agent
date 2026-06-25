@@ -523,8 +523,18 @@ class Database:
             select
               (select count(*) from social_posts) as total_source_posts,
               (select count(*) from parsed_alerts) as total_alerts,
-              (select count(*) from parsed_alerts where needs_review = 0) as parsed_alerts,
-              (select count(*) from parsed_alerts where needs_review = 1) as unparseable_alerts,
+              (select count(*) from parsed_alerts where metadata_json like '%clean_entry%') as clean_priced_entries,
+              (select count(*) from parsed_alerts where metadata_json like '%valid_contract_missing_price%') as valid_missing_price_entries,
+              (select count(*) from parsed_alerts where metadata_json like '%hype_potential%') as hype_potential_posts,
+              (select count(*) from parsed_alerts where metadata_json like '%contract_parse_low_confidence%') as parser_misses,
+              (select count(*) from parsed_alerts where metadata_json like '%clean_entry%' or metadata_json like '%valid_contract_missing_price%') as parsed_alerts,
+              (select count(*) from parsed_alerts where metadata_json like '%contract_parse_low_confidence%') as unparseable_alerts,
+              (select count(*) from trade_updates where update_type = 'trade_update' and raw_update_text like '%add%') as add_updates,
+              (select count(*) from trade_updates where update_type = 'trade_update' and (raw_update_text like '%hold%' or raw_update_text like '%watch%')) as hold_updates,
+              (select count(*) from trade_updates where update_type = 'source_exit_update' and (raw_update_text like '%trim%' or raw_update_text like '%runner%')) as trim_updates,
+              (select count(*) from trade_updates where update_type = 'source_exit_update' and (raw_update_text like '%sold%' or raw_update_text like '%closed%' or raw_update_text like '%out%' or raw_update_text like '%stopped%')) as full_exits,
+              (select count(*) from social_posts where classification = 'general_market_commentary') as general_commentary,
+              (select count(*) from social_posts where classification = 'unknown') as ambiguous_posts,
               (select count(*) from paper_positions) as paper_copied_alerts,
               (select count(*) from paper_positions where status = 'open') as open_paper_positions,
               (select count(*) from paper_positions where status = 'closed') as closed_paper_positions,
@@ -539,6 +549,7 @@ class Database:
             """
         ).fetchone()
         data = dict(row)
+        data["hype_potential_posts"] = data["hype_potential_posts"] + self._count_raw_hype_posts()
         gains = [r["paper_pnl_percent"] for r in self.conn.execute("select paper_pnl_percent from paper_positions where paper_pnl_percent is not null")]
         winners = [g for g in gains if g > 0]
         losers = [g for g in gains if g < 0]
@@ -560,6 +571,15 @@ class Database:
             }
         )
         return data
+
+    def _count_raw_hype_posts(self) -> int:
+        rows = self.conn.execute("select raw_text from social_posts where classification != 'new_trade_alert' or classification is null").fetchall()
+        count = 0
+        for row in rows:
+            text = row["raw_text"].lower()
+            if "potential" in text or "10x" in text or "1000%" in text:
+                count += 1
+        return count
 
     def find_latest_alert_id(self, ticker: Optional[str]) -> Optional[int]:
         if not ticker:

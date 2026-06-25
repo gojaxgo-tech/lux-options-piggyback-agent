@@ -16,9 +16,12 @@ class EnterabilityScorer:
             return ScoreResult(0, ScoreDecision.BLOCKED_BY_KILL_SWITCH, ("kill_switch_active",), "Kill switch is active.")
         if control.paused:
             return ScoreResult(0, ScoreDecision.PAUSED, ("paused",), "Sniper Alert is paused.")
-        if alert.needs_review or not alert.ticker or not alert.option_type or not alert.strike or not alert.expiration_date:
+        has_required_contract = bool(alert.ticker and alert.option_type and alert.strike and alert.expiration_date)
+        if not has_required_contract or "contract_parse_low_confidence" in alert.inferred_fields:
             return ScoreResult(20, ScoreDecision.NEEDS_REVIEW, ("contract_parse_low_confidence",), "Contract parse needs review.")
         if quote is None or quote.option_mid is None:
+            if "valid_contract_missing_price" in alert.inferred_fields:
+                return ScoreResult(25, ScoreDecision.NEEDS_REVIEW, ("valid_contract_missing_price", "missing_quote"), "Valid contract alert is missing entry price and quote data.")
             return ScoreResult(25, ScoreDecision.NEEDS_REVIEW, ("missing_quote",), "Missing option quote. John review required.")
 
         reason_codes: list[str] = []

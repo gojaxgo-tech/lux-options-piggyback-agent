@@ -18,6 +18,16 @@ def test_missing_quote_returns_needs_review():
     assert "missing_quote" in score.reason_codes
 
 
+def test_here_contract_missing_price_is_not_low_confidence():
+    alert = parse_first_alert("$HNI 45 CALL 7/17 HERE", today=date(2026, 6, 25))
+
+    score = EnterabilityScorer().score(alert, None, control())
+
+    assert score.decision == ScoreDecision.NEEDS_REVIEW
+    assert "valid_contract_missing_price" in score.reason_codes
+    assert "contract_parse_low_confidence" not in score.reason_codes
+
+
 def test_price_chased_returns_too_late():
     alert = parse_first_alert("$HNI 45 CALL 7/17 avg .75", today=date(2026, 6, 25))
     quote = MarketQuote("stub", datetime.now(timezone.utc), option_bid=1.10, option_ask=1.20, option_last=1.15, volume=100, open_interest=100)

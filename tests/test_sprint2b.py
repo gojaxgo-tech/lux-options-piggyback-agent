@@ -140,6 +140,25 @@ def test_performance_report_and_notifications(tmp_path):
     assert "Claimed results are not counted" in format_claim_notification("StockOptions888", "Winner banked 100%", "not_enough_data")
 
 
+def test_source_quality_report_uses_locked_rubric(tmp_path):
+    db = Database(tmp_path / "sniper.sqlite")
+    audit = AuditLogger(db)
+    clean_post = SocialPost("x", "StockOptions888", "1", "HIGH CONFIDENCE 🔥🚨\n\n$MTUS 22.5 CALL 7/17 avg .20🚨", datetime.now(timezone.utc))
+    missing_price_post = SocialPost("x", "StockOptions888", "2", "Overnight swing\n\n$HNI 45 CALL 7/17 HERE🚨", datetime.now(timezone.utc))
+    hype_post = SocialPost("x", "StockOptions888", "3", "1000% POTENTIAL 🔥🚨\n\n$MTUS 22.5 CALL 7/17 HERE🚨", datetime.now(timezone.utc))
+    for post in (clean_post, missing_price_post, hype_post):
+        social_id, _ = db.save_social_post(post)
+        db.update_classification(social_id, classify_text(post.raw_text))
+        db.save_parsed_alert(social_id, parse_alerts(post.raw_text)[0])
+
+    report = json.loads(ReportGenerator(db, audit).source_quality())
+
+    assert report["clean_priced_entries"] == 1
+    assert report["valid_missing_price_entries"] == 2
+    assert report["hype_potential_posts"] == 1
+    assert report["parser_misses"] == 0
+
+
 def test_tradier_missing_credentials_and_order_safety(tmp_path):
     cfg = settings(tmp_path)
     db = Database(tmp_path / "sniper.sqlite")

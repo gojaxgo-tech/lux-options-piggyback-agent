@@ -27,4 +27,21 @@ def test_parser_marks_here_without_price_for_review():
 
     assert parsed.time_horizon == "SWING OVERNIGHT"
     assert parsed.needs_review
+    assert "valid_contract_missing_price" in parsed.inferred_fields
+    assert "contract_parse_low_confidence" not in parsed.inferred_fields
 
+
+def test_real_here_posts_are_valid_contract_missing_price():
+    examples = [
+        "Overnight swing\n\n$HNI 45 CALL 7/17 HERE🚨",
+        "SWING OVERNIGHT 🔥🚨\n\n$HNI 45 CALL 7/17 HERE🚨",
+        "1000% POTENTIAL 🔥🚨\n\n$MTUS 22.5 CALL 7/17 HERE🚨",
+        "10x potential 🔥🚨\n\n$MTUS 22.5 CALL 7/17 HERE🚨",
+    ]
+
+    for text in examples:
+        parsed = parse_first_alert(text, today=date(2026, 6, 25))
+        assert parsed.ticker in {"HNI", "MTUS"}
+        assert parsed.expiration_date == "2026-07-17"
+        assert parsed.alert_price is None
+        assert "valid_contract_missing_price" in parsed.inferred_fields
