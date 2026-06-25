@@ -1,0 +1,17 @@
+[Unit]
+Description=Sniper Alert Monitor (Lux Runtime)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/lux-options-piggyback-agent
+EnvironmentFile=/opt/lux-options-piggyback-agent/.env
+ExecStart=/opt/lux-options-piggyback-agent/.venv/bin/python -m app.main daemon
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/sniper-alert.log
+StandardError=append:/var/log/sniper-alert.log
+
+[Install]
+WantedBy=multi-user.target

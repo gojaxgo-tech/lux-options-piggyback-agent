@@ -1,0 +1,32 @@
+services:
+  sniper-alert:
+    container_name: sniper-alert
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    command: ["python", "-m", "app.main", "daemon"]
+    environment:
+      APP_NAME: "Sniper Alert"
+      SOURCE_MODE: "manual"
+      MARKET_DATA_PROVIDER: "none"
+      BROKER_PROVIDER: "tradier"
+      BROKER_MODE: "none"
+      BROKER_EXECUTION_ENABLED: "false"
+      REQUIRE_HUMAN_APPROVAL: "true"
+      TRADIER_ENV: "sandbox"
+      AUTONOMY_LEVEL: "monitor_only"
+      PUBLIC_X_ENGAGEMENT: "false"
+      KILL_SWITCH: "false"
+      LLM_ENABLED: "false"
+      LLM_REQUIRED: "false"
+      NOTIFICATION_PROVIDER: "console"
+      DATABASE_URL: "sqlite:////app/data/sniper_alert.sqlite"
+      LOG_FILE: "/app/logs/sniper_alert.log"
+    volumes:
+      - sniper_alert_data:/app/data
+      - sniper_alert_logs:/app/logs
+
+volumes:
+  sniper_alert_data:
+  sniper_alert_logs:
