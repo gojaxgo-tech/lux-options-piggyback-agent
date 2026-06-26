@@ -3,7 +3,7 @@ from app.models import Classification
 
 
 def test_classifies_new_trade_alert():
-    assert classify_text("$HNI 45 CALL 7/17 avg .75").classification == Classification.NEW_TRADE_ALERT
+    assert classify_text("$HNI 45 CALL 7/17 avg .75").classification == Classification.CLEAN_ENTRY
 
 
 def test_classifies_claimed_result():
@@ -12,7 +12,7 @@ def test_classifies_claimed_result():
 
 def test_hype_potential_is_not_claimed_result():
     result = classify_text("1000% POTENTIAL 🔥🚨\n\n$MTUS 22.5 CALL 7/17 HERE🚨")
-    assert result.classification == Classification.NEW_TRADE_ALERT
+    assert result.classification == Classification.HYPE_POTENTIAL
     assert result.reason == "hype_potential"
 
 
@@ -23,4 +23,4 @@ def test_real_claimed_result_posts_are_claims():
 
 def test_classifies_unknown_when_uncertain():
     result = classify_text("$HNI maybe soon")
-    assert result.classification == Classification.UNKNOWN
+    assert result.classification == Classification.AMBIGUOUS_UPDATE

@@ -11,6 +11,14 @@ def utc_now() -> datetime:
 
 
 class Classification(str, Enum):
+    CLEAN_ENTRY = "clean_entry"
+    VALID_CONTRACT_MISSING_PRICE = "valid_contract_missing_price"
+    ADD_UPDATE = "add_update"
+    HOLD_UPDATE = "hold_update"
+    TRIM_UPDATE = "trim_update"
+    FULL_EXIT = "full_exit"
+    HYPE_POTENTIAL = "hype_potential"
+    AMBIGUOUS_UPDATE = "ambiguous_update"
     NEW_TRADE_ALERT = "new_trade_alert"
     TRADE_UPDATE = "trade_update"
     SOURCE_EXIT_UPDATE = "source_exit_update"

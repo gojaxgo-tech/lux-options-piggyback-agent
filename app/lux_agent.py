@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from app.classifier import classify_text
 from app.models import AutonomyLevel, Classification, ScoreDecision, SocialPost
 from app.notifications import format_alert_notification
 from app.paper_trading import PaperTracker
 from app.parser import parse_alerts, parse_trade_update
+from app.trades import canonical_trade_id, state_hash
 
 
 class LuxAgent:
@@ -73,9 +76,22 @@ class LuxAgent:
         self.database.update_classification(social_post_id, classification)
         self.audit_logger.log("post_classified", f"{post.source_post_id}: {classification.classification.value}")
 
-        if classification.classification == Classification.NEW_TRADE_ALERT:
+        if classification.classification in (
+            Classification.NEW_TRADE_ALERT,
+            Classification.CLEAN_ENTRY,
+            Classification.VALID_CONTRACT_MISSING_PRICE,
+            Classification.HYPE_POTENTIAL,
+        ):
             return self._handle_new_alert(social_post_id, post)
-        if classification.classification in (Classification.CLAIMED_RESULT, Classification.TRADE_UPDATE, Classification.SOURCE_EXIT_UPDATE):
+        if classification.classification in (
+            Classification.CLAIMED_RESULT,
+            Classification.TRADE_UPDATE,
+            Classification.SOURCE_EXIT_UPDATE,
+            Classification.ADD_UPDATE,
+            Classification.HOLD_UPDATE,
+            Classification.TRIM_UPDATE,
+            Classification.FULL_EXIT,
+        ):
             return self._handle_update(social_post_id, post, classification.classification)
 
         self.audit_logger.log("llm_call_skipped", f"Rules classified post as {classification.classification.value}")
@@ -98,8 +114,8 @@ class LuxAgent:
             score = self.scoring_engine.score(alert, quote, self.database.get_control_state())
             self.database.save_score(parsed_alert_id, quote_id, score)
             self.audit_logger.log("score_generated", f"Alert {parsed_alert_id}: {score.decision.value} {score.score}")
-            self._notify_alert(alert, quote, score)
-            if self.database.get_control_state().autonomy_level == AutonomyLevel.PAPER_TRADE:
+            self._notify_alert(alert, quote, score, post)
+            if self.database.get_control_state().autonomy_level == AutonomyLevel.PAPER_TRADE and "hype_potential" not in alert.inferred_fields:
                 opened = self.paper_tracker.maybe_open(parsed_alert_id, alert, quote, enabled=True)
                 if opened:
                     self.audit_logger.log("paper_position_opened", f"Paper position opened for alert {parsed_alert_id}")
@@ -107,6 +123,9 @@ class LuxAgent:
 
     def _handle_update(self, social_post_id: int, post: SocialPost, classification: Classification) -> dict:
         update = parse_trade_update(post.raw_text)
+        if classification in (Classification.ADD_UPDATE, Classification.HOLD_UPDATE, Classification.TRIM_UPDATE, Classification.FULL_EXIT):
+            mapped_type = "source_exit_update" if classification in (Classification.TRIM_UPDATE, Classification.FULL_EXIT) else classification.value
+            update = replace(update, update_type=mapped_type, source_exit_detected=classification in (Classification.TRIM_UPDATE, Classification.FULL_EXIT))
         update_id = self.database.save_trade_update(social_post_id, update)
         if classification == Classification.CLAIMED_RESULT:
             event = "claimed_performance_detected"
@@ -117,11 +136,20 @@ class LuxAgent:
         self.audit_logger.log(event, f"Update {update_id} stored as unverified unless quote data verifies it")
         return {"status": classification.value, "social_post_id": social_post_id, "update_id": update_id}
 
-    def _notify_alert(self, alert, quote, score) -> None:
+    def _notify_alert(self, alert, quote, score, post: SocialPost) -> None:
         state = self.database.get_control_state()
         if state.paused or state.kill_switch:
             self.audit_logger.log("notification_skipped", "Paused or kill switch active")
             return
+        trade_id = canonical_trade_id(alert)
+        event_type = "new_missing_price_entry" if "valid_contract_missing_price" in alert.inferred_fields else "new_clean_entry"
+        if "hype_potential" in alert.inferred_fields:
+            event_type = "hype_potential_detected"
+        digest = state_hash(trade_id, event_type, post.source_post_id, score.decision.value, score.reason_codes)
+        if not self.database.should_notify(trade_id, event_type, post.source_post_id, digest):
+            self.audit_logger.log("notification_deduped", f"No notification change for {trade_id or post.source_post_id}")
+            return
+        self.database.record_state_change(trade_id, event_type, post.source_post_id, digest, None, score.decision.value, f"{event_type}: {trade_id or post.source_post_id}")
         message = format_alert_notification(self.settings.source_account, alert, quote, score)
         try:
             self.notifier.send("Sniper Alert", message)

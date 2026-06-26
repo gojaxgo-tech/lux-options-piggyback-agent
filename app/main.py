@@ -72,7 +72,7 @@ def main() -> None:
     sub.add_parser("paper")
     sub.add_parser("audit")
     report = sub.add_parser("report")
-    report.add_argument("kind", choices=("performance", "daily", "source-quality"))
+    report.add_argument("kind", choices=("performance", "daily", "source-quality", "trades", "latest"))
 
     args = parser.parse_args()
     settings, database, audit, agent = build_agent()
@@ -156,6 +156,10 @@ def main() -> None:
             print(reports.performance())
         elif args.kind == "daily":
             print(reports.daily())
+        elif args.kind == "trades":
+            print(reports.trades())
+        elif args.kind == "latest":
+            print(reports.latest())
         else:
             print(reports.source_quality())
 

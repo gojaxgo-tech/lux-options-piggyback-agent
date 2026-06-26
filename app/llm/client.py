@@ -16,8 +16,9 @@ class LlmClient:
             return None
         prompt = (
             "Classify or extract this private options alert post. Return JSON only. "
-            "Allowed classifications: new_trade_alert, trade_update, claimed_result, "
-            "general_market_commentary, non_trade, unknown. Extract fields only if present. "
+            "Allowed classifications: clean_entry, valid_contract_missing_price, add_update, "
+            "hold_update, trim_update, full_exit, claimed_result, hype_potential, "
+            "general_commentary, ambiguous_update, non_trade. Extract fields only if present. "
             "Never approve a trade, size a trade, recommend buying, or override safety controls.\n\n"
             f"Post:\n{text}"
         )

@@ -14,6 +14,7 @@ from app.reports import ReportGenerator
 from app.scoring import EnterabilityScorer
 from app.config import Settings
 from app.social_provider import JsonlSourceProvider
+from app.trades import canonical_trade_id, state_hash
 
 
 def settings(tmp_path):
@@ -102,7 +103,7 @@ def test_exit_language_classifies_and_marks_source_exit(tmp_path):
 
     update_post = SocialPost("x", "StockOptions888", "2", "$HNI sold half, leave runners", datetime.now(timezone.utc))
     update_id, _ = db.save_social_post(update_post)
-    assert classify_text(update_post.raw_text).classification == Classification.SOURCE_EXIT_UPDATE
+    assert classify_text(update_post.raw_text).classification == Classification.TRIM_UPDATE
     from app.parser import parse_trade_update
 
     db.save_trade_update(update_id, parse_trade_update(update_post.raw_text))
@@ -198,3 +199,55 @@ def test_paper_threshold_crossing_is_audited(tmp_path):
     events = [row["event_type"] for row in db.conn.execute("select event_type from audit_events")]
     assert "paper_position_updated" in events
     assert "paper_threshold_crossed" in events
+
+
+def test_canonical_trade_id_generation_and_expiration_normalization():
+    alert = parse_alerts("$MTUS 22.5 CALL 7/17 avg .20")[0]
+
+    assert alert.expiration_date.endswith("-07-17")
+    assert canonical_trade_id(alert).endswith("_22_5C")
+
+
+def test_duplicate_alerts_share_canonical_trade(tmp_path):
+    db = Database(tmp_path / "sniper.sqlite")
+    first_post = SocialPost("x", "StockOptions888", "1", "$HNI 45 CALL 7/17 avg .75", datetime.now(timezone.utc))
+    second_post = SocialPost("x", "StockOptions888", "2", "SWING OVERNIGHT $HNI 45 CALL 7/17 HERE", datetime.now(timezone.utc))
+    ids = []
+    for post in (first_post, second_post):
+        social_id, _ = db.save_social_post(post)
+        ids.append(db.save_parsed_alert(social_id, parse_alerts(post.raw_text)[0]))
+
+    rows = [row["canonical_trade_id"] for row in db.conn.execute("select canonical_trade_id from parsed_alerts order by id")]
+    trades = db.conn.execute("select count(*) as c from trades").fetchone()["c"]
+    assert rows[0] == rows[1] == "HNI_2026_07_17_45C"
+    assert trades == 1
+
+
+def test_lifecycle_transitions_and_notification_dedupe(tmp_path):
+    db = Database(tmp_path / "sniper.sqlite")
+    post = SocialPost("x", "StockOptions888", "1", "$HNI 45 CALL 7/17 avg .75", datetime.now(timezone.utc))
+    social_id, _ = db.save_social_post(post)
+    alert = parse_alerts(post.raw_text)[0]
+    parsed_id = db.save_parsed_alert(social_id, alert)
+    PaperTracker(db).maybe_open(parsed_id, alert, None, enabled=True)
+    trade = db.conn.execute("select lifecycle_state from trades where canonical_trade_id = 'HNI_2026_07_17_45C'").fetchone()
+    digest = state_hash("HNI_2026_07_17_45C", "new_clean_entry", "1", "needs_review")
+
+    assert trade["lifecycle_state"] == "paper_open"
+    assert db.should_notify("HNI_2026_07_17_45C", "new_clean_entry", "1", digest) is True
+    assert db.should_notify("HNI_2026_07_17_45C", "new_clean_entry", "1", digest) is False
+
+
+def test_latest_report_is_db_backed(tmp_path):
+    db = Database(tmp_path / "sniper.sqlite")
+    audit = AuditLogger(db)
+    post = SocialPost("x", "StockOptions888", "1", "$HNI 45 CALL 7/17 avg .75", datetime.now(timezone.utc))
+    social_id, _ = db.save_social_post(post)
+    db.update_classification(social_id, classify_text(post.raw_text))
+    db.save_parsed_alert(social_id, parse_alerts(post.raw_text)[0])
+
+    report = json.loads(ReportGenerator(db, audit).latest())
+
+    assert report["latest_source_posts"][0]["source_post_id"] == "1"
+    assert report["latest_canonical_trades"][0]["canonical_trade_id"] == "HNI_2026_07_17_45C"
+    assert "source_quality_summary" in report

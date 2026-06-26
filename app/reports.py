@@ -31,17 +31,30 @@ class ReportGenerator:
     def daily(self) -> str:
         return self.performance()
 
+    def trades(self) -> str:
+        if self.audit_logger:
+            self.audit_logger.log("performance_report_generated", "Trades report generated")
+        rows = [dict(row) for row in self.database.conn.execute(
+            "select * from trades order by updated_at desc limit 50"
+        )]
+        return json.dumps({"canonical_trades": rows}, indent=2)
+
+    def latest(self) -> str:
+        if self.audit_logger:
+            self.audit_logger.log("performance_report_generated", "Latest DB-backed report generated")
+        return json.dumps(self.database.latest_report_data(), indent=2)
+
     def source_quality(self) -> str:
         data = self.database.performance_summary()
         if self.audit_logger:
             self.audit_logger.log("performance_report_generated", "Source quality report generated")
-        conclusion = "insufficient data"
+        conclusion = "insufficient_data"
         if data["clean_priced_entries"] and data["claims_not_enough_data"]:
-            conclusion = "promising but unverified"
+            conclusion = "promising_but_unverified"
         if data["hype_potential_posts"] > data["clean_priced_entries"]:
-            conclusion = "hype-heavy"
+            conclusion = "hype_heavy"
         if data["alerts_skipped_missing_quote"]:
-            conclusion = "improving with quote data needed"
+            conclusion = "improving_with_quote_data_needed"
         return json.dumps(
             {
                 "total_source_posts_captured": data["total_source_posts"],

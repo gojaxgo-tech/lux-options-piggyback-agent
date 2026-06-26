@@ -16,6 +16,7 @@ from app.models import (
     TradeUpdate,
     utc_now,
 )
+from app.trades import canonical_trade_id
 
 
 class Database:
@@ -160,10 +161,65 @@ class Database:
                 message text not null,
                 created_at text not null
             );
+
+            create table if not exists trades (
+                canonical_trade_id text primary key,
+                ticker text not null,
+                option_type text not null,
+                strike real not null,
+                expiration_date text not null,
+                lifecycle_state text not null,
+                first_alert_id integer,
+                latest_alert_id integer,
+                classification_label text,
+                source_quality_confidence real,
+                created_at text not null,
+                updated_at text not null
+            );
+
+            create table if not exists state_changes (
+                id integer primary key autoincrement,
+                canonical_trade_id text,
+                event_type text not null,
+                source_post_id text,
+                state_hash text not null,
+                previous_state text,
+                new_state text,
+                message text not null,
+                created_at text not null
+            );
+
+            create table if not exists notification_dedupe (
+                id integer primary key autoincrement,
+                canonical_trade_id text,
+                event_type text not null,
+                source_post_id text,
+                state_hash text not null,
+                created_at text not null,
+                unique(canonical_trade_id, event_type, source_post_id, state_hash)
+            );
             """
         )
+        self._ensure_columns("parsed_alerts", {
+            "canonical_trade_id": "text",
+            "entry_classification": "text",
+        })
+        self._ensure_columns("trade_updates", {
+            "canonical_trade_id": "text",
+        })
+        self._ensure_columns("scores", {
+            "recommendation_confidence": "real",
+            "quote_confidence": "real",
+        })
         self._ensure_paper_columns()
+        self._backfill_trades()
         self.conn.commit()
+
+    def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
+        existing = {row["name"] for row in self.conn.execute(f"pragma table_info({table})")}
+        for name, definition in columns.items():
+            if name not in existing:
+                self.conn.execute(f"alter table {table} add column {name} {definition}")
 
     def _ensure_paper_columns(self) -> None:
         existing = {row["name"] for row in self.conn.execute("pragma table_info(paper_positions)")}
@@ -183,10 +239,35 @@ class Database:
             "last_price_time": "text",
             "source_exit_detected": "integer not null default 0",
             "source_exit_post_id": "text",
+            "canonical_trade_id": "text",
         }
         for name, definition in columns.items():
             if name not in existing:
                 self.conn.execute(f"alter table paper_positions add column {name} {definition}")
+
+    def _backfill_trades(self) -> None:
+        rows = self.conn.execute("select * from parsed_alerts where canonical_trade_id is null").fetchall()
+        for row in rows:
+            alert = _alert_from_row(row)
+            trade_id = canonical_trade_id(alert)
+            if not trade_id:
+                continue
+            entry_classification = _entry_classification(row["metadata_json"])
+            self.conn.execute(
+                "update parsed_alerts set canonical_trade_id = ?, entry_classification = ? where id = ?",
+                (trade_id, entry_classification, row["id"]),
+            )
+            self._upsert_trade_from_row(trade_id, row, entry_classification)
+        paper_rows = self.conn.execute(
+            """
+            select paper_positions.id, parsed_alerts.canonical_trade_id
+            from paper_positions
+            join parsed_alerts on parsed_alerts.id = paper_positions.parsed_alert_id
+            where paper_positions.canonical_trade_id is null and parsed_alerts.canonical_trade_id is not null
+            """
+        ).fetchall()
+        for row in paper_rows:
+            self.conn.execute("update paper_positions set canonical_trade_id = ? where id = ?", (row["canonical_trade_id"], row["id"]))
 
     def initialize_control_state(self, autonomy_level: AutonomyLevel, kill_switch: bool) -> None:
         now = utc_now().isoformat()
@@ -287,13 +368,15 @@ class Database:
     def save_parsed_alert(self, social_post_id: int, alert: ParsedAlert) -> int:
         now = utc_now().isoformat()
         metadata = {"inferred_fields": list(alert.inferred_fields)}
+        trade_id = canonical_trade_id(alert)
+        entry_classification = _entry_classification(json.dumps(metadata))
         cursor = self.conn.execute(
             """
             insert into parsed_alerts
             (social_post_id, ticker, option_type, strike, expiration_date, alert_price, alert_price_raw,
              contract_symbol, side, strategy, time_horizon, confidence_label, hype_label, raw_alert_text,
-             parse_confidence, needs_review, metadata_json, created_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             parse_confidence, needs_review, metadata_json, created_at, canonical_trade_id, entry_classification)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 social_post_id,
@@ -314,24 +397,35 @@ class Database:
                 1 if alert.needs_review else 0,
                 json.dumps(metadata),
                 now,
+                trade_id,
+                entry_classification,
             ),
         )
+        parsed_alert_id = int(cursor.lastrowid)
+        if trade_id:
+            row = self.conn.execute("select * from parsed_alerts where id = ?", (parsed_alert_id,)).fetchone()
+            self._upsert_trade_from_row(trade_id, row, entry_classification)
         self.conn.commit()
-        return int(cursor.lastrowid)
+        return parsed_alert_id
 
     def save_trade_update(self, social_post_id: int, update: TradeUpdate) -> int:
         related_alert_id = self.find_latest_alert_id(update.ticker)
+        trade_id = None
+        if related_alert_id:
+            related = self.conn.execute("select canonical_trade_id from parsed_alerts where id = ?", (related_alert_id,)).fetchone()
+            trade_id = related["canonical_trade_id"] if related else None
         now = utc_now().isoformat()
         cursor = self.conn.execute(
             """
             insert into trade_updates
-            (social_post_id, related_alert_id, update_type, claimed_price, claimed_percent_gain,
+            (social_post_id, related_alert_id, canonical_trade_id, update_type, claimed_price, claimed_percent_gain,
              claimed_status, raw_update_text, created_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 social_post_id,
                 related_alert_id,
+                trade_id,
                 update.update_type,
                 update.claimed_price,
                 update.claimed_percent_gain,
@@ -362,6 +456,9 @@ class Database:
         if update.source_exit_detected and related_alert_id:
             source_post_id = self.conn.execute("select source_post_id from social_posts where id = ?", (social_post_id,)).fetchone()
             self.mark_source_exit(related_alert_id, source_post_id["source_post_id"] if source_post_id else None)
+        if trade_id:
+            lifecycle = _lifecycle_for_update(update.update_type)
+            self._set_trade_state(trade_id, lifecycle)
         self.conn.commit()
         return int(cursor.lastrowid)
 
@@ -394,11 +491,13 @@ class Database:
         return int(cursor.lastrowid)
 
     def save_score(self, parsed_alert_id: int, quote_id: Optional[int], score: ScoreResult) -> None:
+        quote_confidence = 0.0 if quote_id is None else 1.0
+        recommendation_confidence = max(0.0, min(1.0, score.score / 100))
         self.conn.execute(
             """
             insert into scores
-            (parsed_alert_id, quote_id, score, decision, reason_codes, summary, created_at)
-            values (?, ?, ?, ?, ?, ?, ?)
+            (parsed_alert_id, quote_id, score, decision, reason_codes, summary, created_at, recommendation_confidence, quote_confidence)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 parsed_alert_id,
@@ -408,8 +507,14 @@ class Database:
                 ",".join(score.reason_codes),
                 score.summary,
                 utc_now().isoformat(),
+                recommendation_confidence,
+                quote_confidence,
             ),
         )
+        row = self.conn.execute("select canonical_trade_id from parsed_alerts where id = ?", (parsed_alert_id,)).fetchone()
+        if row and row["canonical_trade_id"]:
+            next_state = "insufficient_data" if "missing_quote" in score.reason_codes else "watching"
+            self._set_trade_state(row["canonical_trade_id"], next_state)
         self.conn.commit()
 
     def create_paper_position(
@@ -434,8 +539,8 @@ class Database:
             insert into paper_positions
             (parsed_alert_id, status, paper_entry_price, paper_entry_time, notes, created_at, updated_at,
              source_post_id, source_url, ticker, option_type, strike, expiration_date, paper_entry_source,
-             max_seen_price, min_seen_price, last_price, last_price_time)
-            values (?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             max_seen_price, min_seen_price, last_price, last_price_time, canonical_trade_id)
+            values (?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 parsed_alert_id,
@@ -455,8 +560,11 @@ class Database:
                 entry_price,
                 entry_price,
                 now,
+                alert_row["canonical_trade_id"] if alert_row else None,
             ),
         )
+        if alert_row and alert_row["canonical_trade_id"]:
+            self._set_trade_state(alert_row["canonical_trade_id"], "paper_open")
         self.conn.commit()
 
     def mark_source_exit(self, parsed_alert_id: int, source_exit_post_id: Optional[str]) -> None:
@@ -472,6 +580,9 @@ class Database:
             """,
             (source_exit_post_id, now, parsed_alert_id),
         )
+        row = self.conn.execute("select canonical_trade_id from parsed_alerts where id = ?", (parsed_alert_id,)).fetchone()
+        if row and row["canonical_trade_id"]:
+            self._set_trade_state(row["canonical_trade_id"], "source_exited")
         self.conn.commit()
 
     def update_paper_position_price(self, parsed_alert_id: int, last_price: float) -> list[int]:
@@ -516,6 +627,122 @@ class Database:
     def paper_position_exists(self, parsed_alert_id: int) -> bool:
         row = self.conn.execute("select id from paper_positions where parsed_alert_id = ? limit 1", (parsed_alert_id,)).fetchone()
         return row is not None
+
+    def should_notify(self, canonical_trade_id: Optional[str], event_type: str, source_post_id: Optional[str], state_hash: str) -> bool:
+        cursor = self.conn.execute(
+            """
+            insert or ignore into notification_dedupe
+            (canonical_trade_id, event_type, source_post_id, state_hash, created_at)
+            values (?, ?, ?, ?, ?)
+            """,
+            (canonical_trade_id, event_type, source_post_id, state_hash, utc_now().isoformat()),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def record_state_change(
+        self,
+        canonical_trade_id: Optional[str],
+        event_type: str,
+        source_post_id: Optional[str],
+        state_hash_value: str,
+        previous_state: Optional[str],
+        new_state: Optional[str],
+        message: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            insert into state_changes
+            (canonical_trade_id, event_type, source_post_id, state_hash, previous_state, new_state, message, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (canonical_trade_id, event_type, source_post_id, state_hash_value, previous_state, new_state, message, utc_now().isoformat()),
+        )
+        self.conn.commit()
+
+    def latest_report_data(self) -> dict:
+        return {
+            "latest_source_posts": [dict(row) for row in self.conn.execute(
+                """
+                select id, source_post_id, source_url, raw_text, classification, classification_confidence, created_at
+                from social_posts order by id desc limit 10
+                """
+            )],
+            "latest_parsed_alerts": [dict(row) for row in self.conn.execute(
+                """
+                select id, canonical_trade_id, entry_classification, ticker, option_type, strike, expiration_date,
+                       alert_price, parse_confidence, needs_review, created_at
+                from parsed_alerts order by id desc limit 10
+                """
+            )],
+            "latest_canonical_trades": [dict(row) for row in self.conn.execute(
+                "select * from trades order by updated_at desc limit 10"
+            )],
+            "open_paper_positions": [dict(row) for row in self.conn.execute(
+                """
+                select id, canonical_trade_id, parsed_alert_id, ticker, option_type, strike, expiration_date,
+                       status, paper_entry_price, paper_entry_source, paper_pnl_percent, updated_at
+                from paper_positions where status in ('open', 'source_exit_detected', 'insufficient_data')
+                order by updated_at desc limit 10
+                """
+            )],
+            "recent_state_changes": [dict(row) for row in self.conn.execute(
+                "select * from state_changes order by id desc limit 10"
+            )],
+            "recent_warnings": [dict(row) for row in self.conn.execute(
+                "select id, event_type, severity, message, created_at from audit_events where severity in ('warning', 'error') order by id desc limit 10"
+            )],
+            "source_quality_summary": self.performance_summary(),
+        }
+
+    def _upsert_trade_from_row(self, trade_id: str, row, entry_classification: str) -> None:
+        now = utc_now().isoformat()
+        existing = self.conn.execute("select * from trades where canonical_trade_id = ?", (trade_id,)).fetchone()
+        lifecycle = "new_alert" if entry_classification == "clean_entry" else "insufficient_data"
+        if existing:
+            self.conn.execute(
+                """
+                update trades
+                set latest_alert_id = ?,
+                    classification_label = ?,
+                    source_quality_confidence = ?,
+                    updated_at = ?
+                where canonical_trade_id = ?
+                """,
+                (row["id"], entry_classification, _source_quality_confidence(entry_classification), now, trade_id),
+            )
+        else:
+            self.conn.execute(
+                """
+                insert into trades
+                (canonical_trade_id, ticker, option_type, strike, expiration_date, lifecycle_state,
+                 first_alert_id, latest_alert_id, classification_label, source_quality_confidence, created_at, updated_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trade_id,
+                    row["ticker"],
+                    row["option_type"],
+                    row["strike"],
+                    row["expiration_date"],
+                    lifecycle,
+                    row["id"],
+                    row["id"],
+                    entry_classification,
+                    _source_quality_confidence(entry_classification),
+                    now,
+                    now,
+                ),
+            )
+
+    def _set_trade_state(self, trade_id: str, new_state: str) -> None:
+        row = self.conn.execute("select lifecycle_state from trades where canonical_trade_id = ?", (trade_id,)).fetchone()
+        if not row or row["lifecycle_state"] == new_state:
+            return
+        previous = row["lifecycle_state"]
+        now = utc_now().isoformat()
+        self.conn.execute("update trades set lifecycle_state = ?, updated_at = ? where canonical_trade_id = ?", (new_state, now, trade_id))
+        self.record_state_change(trade_id, "lifecycle_state_changed", None, f"{previous}->{new_state}", previous, new_state, f"{trade_id} moved {previous} -> {new_state}")
 
     def performance_summary(self) -> dict:
         row = self.conn.execute(
@@ -573,7 +800,15 @@ class Database:
         return data
 
     def _count_raw_hype_posts(self) -> int:
-        rows = self.conn.execute("select raw_text from social_posts where classification != 'new_trade_alert' or classification is null").fetchall()
+        rows = self.conn.execute(
+            """
+            select social_posts.raw_text
+            from social_posts
+            left join parsed_alerts on parsed_alerts.social_post_id = social_posts.id
+            where parsed_alerts.id is null
+              and (social_posts.classification != 'new_trade_alert' or social_posts.classification is null)
+            """
+        ).fetchall()
         count = 0
         for row in rows:
             text = row["raw_text"].lower()
@@ -609,3 +844,64 @@ class Database:
             (check_name, status, message, utc_now().isoformat()),
         )
         self.conn.commit()
+
+
+def _alert_from_row(row) -> ParsedAlert:
+    from app.models import OptionType
+
+    option_type = OptionType(row["option_type"]) if row["option_type"] else None
+    metadata = json.loads(row["metadata_json"] or "{}")
+    return ParsedAlert(
+        raw_alert_text=row["raw_alert_text"],
+        ticker=row["ticker"],
+        option_type=option_type,
+        strike=row["strike"],
+        expiration_date=row["expiration_date"],
+        alert_price=row["alert_price"],
+        alert_price_raw=row["alert_price_raw"],
+        contract_symbol=row["contract_symbol"],
+        side=row["side"],
+        strategy=row["strategy"],
+        time_horizon=row["time_horizon"],
+        confidence_label=row["confidence_label"],
+        hype_label=row["hype_label"],
+        parse_confidence=row["parse_confidence"],
+        needs_review=bool(row["needs_review"]),
+        inferred_fields=tuple(metadata.get("inferred_fields", [])),
+    )
+
+
+def _entry_classification(metadata_json: str | None) -> str:
+    metadata = json.loads(metadata_json or "{}")
+    fields = set(metadata.get("inferred_fields", []))
+    if "hype_potential" in fields:
+        return "hype_potential"
+    if "clean_entry" in fields:
+        return "clean_entry"
+    if "valid_contract_missing_price" in fields:
+        return "valid_contract_missing_price"
+    if "contract_parse_low_confidence" in fields:
+        return "ambiguous_update"
+    return "ambiguous_update"
+
+
+def _source_quality_confidence(entry_classification: str) -> float:
+    if entry_classification == "clean_entry":
+        return 0.85
+    if entry_classification == "valid_contract_missing_price":
+        return 0.65
+    if entry_classification == "hype_potential":
+        return 0.4
+    return 0.2
+
+
+def _lifecycle_for_update(update_type: str) -> str:
+    return {
+        "add_update": "source_added",
+        "hold_update": "source_holding",
+        "trim_update": "source_trimmed",
+        "source_exit_update": "source_exited",
+        "full_exit": "source_exited",
+        "claimed_result": "insufficient_data",
+        "trade_update": "source_holding",
+    }.get(update_type, "watching")
