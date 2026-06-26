@@ -14,6 +14,7 @@ from app.lux_agent import LuxAgent
 from app.market_data import build_market_data_provider
 from app.models import AutonomyLevel, MarketQuote
 from app.notifications import build_notifier
+from app.repair import backfill_rubric
 from app.reports import ReportGenerator
 from app.scoring import EnterabilityScorer
 from app.service import run_forever
@@ -73,6 +74,9 @@ def main() -> None:
     sub.add_parser("audit")
     report = sub.add_parser("report")
     report.add_argument("kind", choices=("performance", "daily", "source-quality", "trades", "latest"))
+    repair = sub.add_parser("repair")
+    repair.add_argument("kind", choices=("backfill-rubric",))
+    repair.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args()
     settings, database, audit, agent = build_agent()
@@ -162,6 +166,9 @@ def main() -> None:
             print(reports.latest())
         else:
             print(reports.source_quality())
+    elif args.command == "repair":
+        if args.kind == "backfill-rubric":
+            print(json.dumps(backfill_rubric(database, audit, dry_run=args.dry_run), indent=2))
 
 
 def _status(settings, database: Database) -> str:

@@ -11,6 +11,7 @@ from app.notifications import format_alert_notification, format_claim_notificati
 from app.paper_trading import PaperTracker
 from app.parser import parse_alerts
 from app.reports import ReportGenerator
+from app.repair import backfill_rubric
 from app.scoring import EnterabilityScorer
 from app.config import Settings
 from app.social_provider import JsonlSourceProvider
@@ -251,3 +252,43 @@ def test_latest_report_is_db_backed(tmp_path):
     assert report["latest_source_posts"][0]["source_post_id"] == "1"
     assert report["latest_canonical_trades"][0]["canonical_trade_id"] == "HNI_2026_07_17_45C"
     assert "source_quality_summary" in report
+
+
+def test_backfill_rubric_repairs_old_ambiguous_alerts(tmp_path):
+    db = Database(tmp_path / "sniper.sqlite")
+    audit = AuditLogger(db)
+    post = SocialPost("x", "StockOptions888", "1", "HIGH CONFIDENCE $ACGL 105 CALL 7/17 avg .20", datetime.now(timezone.utc))
+    social_id, _ = db.save_social_post(post)
+    alert = parse_alerts(post.raw_text)[0]
+    parsed_id = db.save_parsed_alert(social_id, alert)
+    db.conn.execute(
+        "update parsed_alerts set metadata_json = ?, entry_classification = ?, canonical_trade_id = ? where id = ?",
+        (json.dumps({"inferred_fields": ["contract_parse_low_confidence"]}), "ambiguous_update", None, parsed_id),
+    )
+    db.conn.execute("delete from trades")
+    db.conn.commit()
+
+    result = backfill_rubric(db, audit)
+    row = db.conn.execute("select canonical_trade_id, entry_classification, metadata_json from parsed_alerts where id = ?", (parsed_id,)).fetchone()
+    trade = db.conn.execute("select classification_label from trades where canonical_trade_id = ?", (row["canonical_trade_id"],)).fetchone()
+
+    assert result["parsed_alerts_repaired"] == 1
+    assert row["canonical_trade_id"] == "ACGL_2026_07_17_105C"
+    assert row["entry_classification"] == "clean_entry"
+    assert trade["classification_label"] == "clean_entry"
+
+
+def test_backfill_rubric_dry_run_does_not_change_rows(tmp_path):
+    db = Database(tmp_path / "sniper.sqlite")
+    post = SocialPost("x", "StockOptions888", "1", "$HNI 45 CALL 7/17 HERE", datetime.now(timezone.utc))
+    social_id, _ = db.save_social_post(post)
+    parsed_id = db.save_parsed_alert(social_id, parse_alerts(post.raw_text)[0])
+    db.conn.execute("update parsed_alerts set entry_classification = ? where id = ?", ("ambiguous_update", parsed_id))
+    db.conn.commit()
+
+    result = backfill_rubric(db, dry_run=True)
+    row = db.conn.execute("select entry_classification from parsed_alerts where id = ?", (parsed_id,)).fetchone()
+
+    assert result["dry_run"] is True
+    assert result["parsed_alerts_repaired"] == 1
+    assert row["entry_classification"] == "ambiguous_update"
